@@ -115,11 +115,11 @@
   <h1>Weibull 分析工具</h1>
   
   <div class="input-section">
-    <label for="df">失效时间 (df) - 逗号分隔:</label>
-    <textarea id="df" placeholder="例如: 16, 34, 53, 75, 93, 120"></textarea>
+    <label for="df">失效时间 - 每行一个数据:</label>
+    <textarea id="df"></textarea>
     
-    <label for="ds">暂停时间 (ds) - 可选，逗号分隔:</label>
-    <textarea id="ds" placeholder="例如: 50, 100, 200, 1000 (可选)"></textarea>
+    <label for="ds">未失效时间 (右删失) - 可选，每行一个数据:</label>
+    <textarea id="ds"></textarea>
     
     <button id="analyze-btn" onclick="runAnalysis()">开始分析</button>
     <span id="loading" style="display:none;"><span class="loading"></span> 计算中...</span>
@@ -212,34 +212,40 @@
     }
 
     // 计算中位秩
-    function calculateMedianRanks(failureTimes, suspendedTimes = [], cl = 0.5) {
-      const allTimes = [...failureTimes, ...suspendedTimes].sort((a, b) => a - b);
-      const n = allTimes.length;
-      const sortedFailures = [...failureTimes].sort((a, b) => a - b);
-      
-      // 计算调整秩
-      const ranks = [];
-      let currentRank = 1;
-      
-      while (currentRank <= sortedFailures.length) {
-        const currentValue = sortedFailures[currentRank - 1];
-        let tieCount = 1;
-        
-        while (currentRank - 1 + tieCount < sortedFailures.length && 
-               sortedFailures[currentRank - 1 + tieCount] === currentValue) {
-          tieCount++;
+
+    function calculateMedianRanks(df, ds = [], cl = 0.5) {
+      const all = df.concat(ds);
+      const n = all.length;
+      const countDict = {};
+      df.forEach((v) => countDict[v] = (countDict[v] || 0) + 1);
+
+      const revRank = [];
+      const sortedAll = [...all].sort((a, b) => a - b);
+      const countLessThan = (v) => sortedAll.filter(x => x < v).length;
+      let seen = new Set();
+
+      for (let j of df) {
+        if (countDict[j] > 1) {
+          if (seen.has(j)) continue;
+          seen.add(j);
+          for (let i = 0; i < countDict[j]; i++) {
+            const count = countLessThan(j) + i;
+            revRank.push(n - count);
+          }
+        } else {
+          revRank.push(n - countLessThan(j));
         }
-        
-        const averageRank = currentRank + (tieCount - 1) / 2;
-        for (let i = 0; i < tieCount; i++) {
-          ranks.push(averageRank);
-        }
-        
-        currentRank += tieCount;
       }
-      
-      // 使用精确的中位秩（Beta分布）
-      return ranks.map(r => jStat.beta.inv(cl, r, n - r + 1));
+
+      const adjRanks = [];
+      let prev = 0;
+      for (let i = 0; i < df.length; i++) {
+        const adj = (revRank[i] * prev + n + 1) / (revRank[i] + 1);
+        adjRanks.push(adj);
+        prev = adj;
+      }
+
+      return adjRanks.map(r => jStat.beta.inv(cl, r, n - r + 1));
     }
 
     // 计算Fisher置信区间
@@ -488,7 +494,7 @@
 
     // 解析输入数据
     function parseInput(input) {
-      return input.split(',')
+      return input.split('\n')
         .map(item => parseFloat(item.trim()))
         .filter(item => !isNaN(item));
     }
@@ -576,7 +582,7 @@
 
     // 初始化示例数据
     document.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('df').value = "16, 34, 53, 75, 93, 120";
+      document.getElementById('df').value = "";
       document.getElementById('ds').value = "";
     });
   </script>
