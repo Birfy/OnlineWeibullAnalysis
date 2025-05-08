@@ -1,16 +1,87 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Weibull Analysis</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.3.0/math.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script>
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .input-section {
+      background: #f5f5f5;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    textarea {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      resize: vertical;
+      min-height: 60px;
+    }
+    button {
+      background-color: #4CAF50;
+      color: white;
+      padding: 10px 15px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    #plot-container {
+      margin-top: 30px;
+    }
     #plot {
-      width: 800px;
+      width: 100%;
       height: 600px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    .results {
+      margin-top: 20px;
+      padding: 15px;
+      background: #f0f8ff;
+      border-radius: 4px;
+    }
+    .loading {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(0,0,0,.3);
+      border-radius: 50%;
+      border-top-color: #000;
+      animation: spin 1s ease-in-out infinite;
+      margin-left: 10px;
+      vertical-align: middle;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .error {
+      color: #d9534f;
+      margin-top: 10px;
     }
     .axis-label {
       font-size: 12px;
@@ -41,176 +112,203 @@
   </style>
 </head>
 <body>
-  <h1>Weibull 分析</h1>
-
-  <label for="df">输入失效时间（逗号分隔）:</label><br>
-  <textarea id="df" rows="2" cols="50" placeholder="例如：16,34,53,75,93,120"></textarea><br><br>
-
-  <label for="ds">输入未失效测试时间（右删失，可留空）:</label><br>
-  <textarea id="ds" rows="2" cols="50" placeholder="例如：50,100,200,1000（可选）"></textarea><br><br>
-
-  <button onclick="runAnalysis()">开始分析</button>
-
-  <div id="plot"></div>
+  <h1>Weibull 分析工具</h1>
+  
+  <div class="input-section">
+    <label for="df">失效时间 (df) - 逗号分隔:</label>
+    <textarea id="df" placeholder="例如: 16, 34, 53, 75, 93, 120"></textarea>
+    
+    <label for="ds">暂停时间 (ds) - 可选，逗号分隔:</label>
+    <textarea id="ds" placeholder="例如: 50, 100, 200, 1000 (可选)"></textarea>
+    
+    <button id="analyze-btn" onclick="runAnalysis()">开始分析</button>
+    <span id="loading" style="display:none;"><span class="loading"></span> 计算中...</span>
+    <div id="error" class="error" style="display:none;"></div>
+  </div>
+  
+  <div id="results" class="results" style="display:none;">
+    <h3>分析结果</h3>
+    <div id="params"></div>
+  </div>
+  
+  <div id="plot-container">
+    <div id="plot"></div>
+  </div>
 
   <script>
-    class Weibull {
-      constructor(df, ds, cl = 0.95) {
-        this.df = df;
-        this.df.sort((a, b) => a - b);
-        this.ds = ds || []; // 若为空，设为空数组
-        this.ds.sort((a, b) => a - b);
+    let cl = 0.95
+
+    class WeibullAnalyzer {
+      constructor(df, ds = [], cl = 0.95) {
+        this.df = [...df].sort((a, b) => a - b);
+        this.ds = ds.length ? [...ds].sort((a, b) => a - b) : [];
         this.cl = cl;
         this.beta = 1;
         this.eta = 1;
+        this.converged = false;
       }
 
-      h(beta_) {
-        const dat = this.df.concat(this.ds);
-        const a = this.df.reduce((acc, v) => acc + Math.log(v), 0);
-        const b = dat.reduce((acc, v) => acc + Math.pow(v, beta_) * Math.log(v), 0);
-        const c = dat.reduce((acc, v) => acc + Math.pow(v, beta_), 0);
-        return (1 / beta_) + a / this.df.length - b / c;
+      // 计算h(beta)函数用于牛顿迭代
+      h(beta) {
+        const allData = [...this.df, ...this.ds];
+        const n = this.df.length;
+        
+        const sumLogT = this.df.reduce((sum, t) => sum + Math.log(t), 0);
+        const sumPowTLogT = allData.reduce((sum, t) => sum + Math.pow(t, beta) * Math.log(t), 0);
+        const sumPowT = allData.reduce((sum, t) => sum + Math.pow(t, beta), 0);
+        
+        return (1 / beta) + (sumLogT / n) - (sumPowTLogT / sumPowT);
       }
 
-      mle() {
-        const tol = 1e-5;
-        let beta = 0.1, diff, iter = 0;
-        const maxIter = 1000;
-
-        do {
-          const f = this.h(beta);
-          const df = (this.h(beta + 1e-7) - this.h(beta - 1e-7)) / 2e-7;
-          const newBeta = beta - f / df;
+      // 最大似然估计
+      mle(tol = 1e-6, maxIter = 100) {
+        let beta = 0.1; // 初始猜测
+        let iter = 0;
+        let diff = Infinity;
+        
+        while (iter < maxIter && diff > tol) {
+          const hVal = this.h(beta);
+          const hDerivative = (this.h(beta + 1e-6) - this.h(beta - 1e-6)) / 2e-6;
+          
+          if (Math.abs(hDerivative) < 1e-10) {
+            console.warn("导数太小，可能无法收敛");
+            break;
+          }
+          
+          const newBeta = beta - hVal / hDerivative;
           diff = Math.abs(newBeta - beta);
           beta = newBeta;
           iter++;
-        } while (diff > tol && iter < maxIter);
-
-        this.beta = beta;
-
-        const dat = this.df.concat(this.ds);
-        const sumPow = dat.reduce((acc, v) => acc + Math.pow(v, beta), 0);
-        this.eta = Math.pow(sumPow / this.df.length, 1 / beta);
-      }
-
-      cdf(x) {
-        return 1 - Math.exp(-Math.pow(x / this.eta, this.beta));
-      }
-
-      generateCDFCurve(min, max) {
-        const x = [], y = [];
-        for (let i = min; i <= max; i += (max - min) / 500) {
-          x.push(i);
-          y.push(this.cdf(i));
         }
+        
+        this.beta = beta;
+        const sumPowT = [...this.df, ...this.ds].reduce((sum, t) => sum + Math.pow(t, beta), 0);
+        this.eta = Math.pow(sumPowT / this.df.length, 1 / beta);
+        this.converged = diff <= tol;
+        
+        return this.converged;
+      }
+
+      // 累积分布函数
+      cdf(t) {
+        return 1 - Math.exp(-Math.pow(t / this.eta, this.beta));
+      }
+
+      // 生成CDF曲线数据点
+      generateCDFCurve(minT, maxT, numPoints = 200) {
+        const x = [], y = [];
+        const logMin = Math.log10(minT);
+        const logMax = Math.log10(maxT);
+        const step = (logMax - logMin) / (numPoints - 1);
+        
+        for (let i = 0; i < numPoints; i++) {
+          const t = Math.pow(10, logMin + i * step);
+          x.push(t);
+          y.push(this.cdf(t));
+        }
+        
         return { x, y };
       }
     }
 
-    function medianRanks(df, ds, cl = 0.5) {
-        const all = df.concat(ds);
-        const n = all.length;
+    // 计算中位秩
+    function calculateMedianRanks(failureTimes, suspendedTimes = [], cl = 0.5) {
+      const allTimes = [...failureTimes, ...suspendedTimes].sort((a, b) => a - b);
+      const n = allTimes.length;
+      const sortedFailures = [...failureTimes].sort((a, b) => a - b);
+      
+      // 计算调整秩
+      const ranks = [];
+      let currentRank = 1;
+      
+      while (currentRank <= sortedFailures.length) {
+        const currentValue = sortedFailures[currentRank - 1];
+        let tieCount = 1;
         
-        // Sort the failure times and assign ranks
-        const sortedFailures = [...df].sort((a, b) => a - b);
-        
-        // Calculate ranks, handling ties properly
-        const ranks = [];
-        let currentRank = 1;
-        
-        while (currentRank <= sortedFailures.length) {
-            const currentValue = sortedFailures[currentRank - 1];
-            
-            // Count how many failures have this same value
-            let tieCount = 1;
-            while (currentRank - 1 + tieCount < sortedFailures.length && 
-                sortedFailures[currentRank - 1 + tieCount] === currentValue) {
-            tieCount++;
-            }
-            
-            // Calculate average rank for these tied values
-            const averageRank = currentRank + (tieCount - 1) / 2;
-            
-            // Assign the average rank to all tied values
-            for (let i = 0; i < tieCount; i++) {
-            ranks.push(averageRank);
-            }
-            
-            currentRank += tieCount;
+        while (currentRank - 1 + tieCount < sortedFailures.length && 
+               sortedFailures[currentRank - 1 + tieCount] === currentValue) {
+          tieCount++;
         }
-  
-        // Calculate median ranks using Bernard's approximation
-        const bernardRanks = ranks.map(r => (r - 0.3) / (n + 0.4));
         
-        // Or using exact median ranks (beta distribution)
-        const exactMedianRanks = ranks.map(r => jStat.beta.inv(cl, r, n - r + 1));
+        const averageRank = currentRank + (tieCount - 1) / 2;
+        for (let i = 0; i < tieCount; i++) {
+          ranks.push(averageRank);
+        }
         
-        // For Weibull analysis, Bernard's approximation is often sufficient
-        // return bernardRanks;
-        
-        // Or if you prefer the exact method:
-        return exactMedianRanks;
+        currentRank += tieCount;
+      }
+      
+      // 使用精确的中位秩（Beta分布）
+      return ranks.map(r => jStat.beta.inv(cl, r, n - r + 1));
     }
 
-    function fisherBounds(w, rel) {
-      const { beta: b, eta, df, ds } = w;
-      const sum1 = df.reduce((acc, x) => acc + (-1 / b ** 2 - Math.pow(x / eta, b) * Math.log(x / eta) ** 2), 0) +
-                  ds.reduce((acc, x) => acc - Math.pow(x / eta, b) * Math.log(x / eta) ** 2, 0);
-      const sum2 = df.reduce((acc, x) => acc + (b / eta ** 2 - Math.pow(x / eta, b) * b * (b + 1) / eta ** 2), 0) +
-                  ds.reduce((acc, x) => acc - Math.pow(x / eta, b) * b * (b + 1) / eta ** 2, 0);
-      const sum3 = df.reduce((acc, x) => acc + (-1 / eta + Math.pow(x / eta, b) * (b * Math.log(x / eta) + 1) / eta), 0) +
-                  ds.reduce((acc, x) => acc + Math.pow(x / eta, b) * (b * Math.log(x / eta) + 1) / eta, 0);
+    // 计算Fisher置信区间
+    function calculateConfidenceBounds(weibull, reliabilityLevels) {
+      const { beta, eta, df, ds, cl } = weibull;
+      const allData = [...df, ...ds];
+      
+      // 计算Fisher信息矩阵的元素
+      const sum1 = df.reduce((sum, t) => sum + (-1 / beta**2 - Math.pow(t / eta, beta) * Math.log(t / eta)**2), 0) +
+                  ds.reduce((sum, t) => sum - Math.pow(t / eta, beta) * Math.log(t / eta)**2, 0);
+      
+      const sum2 = df.reduce((sum, t) => sum + (beta / eta**2 - Math.pow(t / eta, beta) * beta * (beta + 1) / eta**2), 0) +
+                  ds.reduce((sum, t) => sum - Math.pow(t / eta, beta) * beta * (beta + 1) / eta**2, 0);
+      
+      const sum3 = df.reduce((sum, t) => sum + (-1 / eta + Math.pow(t / eta, beta) * (beta * Math.log(t / eta) + 1) / eta), 0) +
+                  ds.reduce((sum, t) => sum + Math.pow(t / eta, beta) * (beta * Math.log(t / eta) + 1) / eta, 0);
 
-      const fisher = math.matrix([[-sum1, -sum3], [-sum3, -sum2]]);
-      const f_inv = math.inv(fisher);
-      const z = jStat.normal.inv((1 + w.cl) / 2, 0, 1);
+      // 构建Fisher信息矩阵并求逆
+      const fisherMatrix = math.matrix([[-sum1, -sum3], [-sum3, -sum2]]);
+      const fisherInverse = math.inv(fisherMatrix);
+      const zScore = jStat.normal.inv((1 + cl) / 2, 0, 1);
 
-      const lower = [], upper = [];
+      const lowerBounds = [], upperBounds = [];
 
-      for (let x of rel) {
-        const ln_ln = Math.log(-Math.log(1 - x));
-        const var_y = f_inv.get([1,1]) / eta ** 2 +
-                      (ln_ln ** 2) * f_inv.get([0,0]) / b ** 4 -
-                      2 * ln_ln * f_inv.get([0,1]) / (b ** 2 * eta);
+      for (const rel of reliabilityLevels) {
+        const logLog = Math.log(-Math.log(1 - rel));
+        const variance = fisherInverse.get([1,1]) / eta**2 +
+                        (logLog**2) * fisherInverse.get([0,0]) / beta**4 -
+                        2 * logLog * fisherInverse.get([0,1]) / (beta**2 * eta);
 
-        const y = Math.log(eta) + ln_ln / b;
-        const delta = z * Math.sqrt(var_y);
-        lower.push(Math.exp(y - delta));
-        upper.push(Math.exp(y + delta));
+        const y = Math.log(eta) + logLog / beta;
+        const delta = zScore * Math.sqrt(variance);
+        lowerBounds.push(Math.exp(y - delta));
+        upperBounds.push(Math.exp(y + delta));
       }
 
-      return { lower, upper };
+      return { lower: lowerBounds, upper: upperBounds };
     }
 
-    // Custom Weibull probability scale function
-    function weibullScale(p) {
+    // Weibull概率尺度转换
+    function toWeibullScale(p) {
       return Math.log(-Math.log(1 - p));
     }
 
-    // Inverse function for the Weibull probability scale
-    function inverseWeibullScale(y) {
+    // 从Weibull尺度转换回概率
+    function fromWeibullScale(y) {
       return 1 - Math.exp(-Math.exp(y));
     }
 
-    function createWeibullPlot(containerId, data, title) {
-      // Clear previous plot
+    // 创建Weibull概率图
+    function createWeibullPlot(containerId, plotData, title) {
+      // 清除之前的图表
       d3.select(`#${containerId}`).html("");
       
-      // Set up dimensions and margins
+      // 设置尺寸和边距
       const margin = {top: 50, right: 100, bottom: 60, left: 60};
       const width = 800 - margin.left - margin.right;
       const height = 600 - margin.top - margin.bottom;
 
-      // Create SVG
+      // 创建SVG
       const svg = d3.select(`#${containerId}`)
         .append("svg")
-        .attr("width", width + margin.left + margin.right)
-        .attr("height", height + margin.top + margin.bottom)
+        .attr("width", "100%")
+        .attr("height", "100%")
+        .attr("viewBox", `0 0 ${width + margin.left + margin.right} ${height + margin.top + margin.bottom}`)
         .append("g")
         .attr("transform", `translate(${margin.left},${margin.top})`);
 
-      // Add title
+      // 添加标题
       svg.append("text")
         .attr("x", width / 2)
         .attr("y", -20)
@@ -218,48 +316,41 @@
         .style("font-size", "16px")
         .text(title);
 
-      // Create scales
+      // 创建比例尺
       const xScale = d3.scaleLog()
-        .domain([d3.min(data.cdf.x), d3.max(data.cdf.x)])
+        .domain([d3.min(plotData.cdf.x), d3.max(plotData.cdf.x)])
         .range([0, width]);
 
-      // Custom y-scale using Weibull probability scale
+      // 自定义y轴比例尺（Weibull概率尺度）
       const yScale = d3.scaleLinear()
-        .domain([weibullScale(0.01), weibullScale(0.99)]) // 1% to 99%
+        .domain([toWeibullScale(0.01), toWeibullScale(0.99)]) // 1%到99%
         .range([height, 0]);
 
-      // Create axes
+      // 创建轴
       const xAxis = d3.axisBottom(xScale).ticks(10, ".1s");
       
-      // Custom y-axis with Weibull probability scale ticks
+      // 自定义y轴刻度
       const yAxis = d3.axisLeft(yScale)
-        .tickValues([weibullScale(0.01), weibullScale(0.05), weibullScale(0.1), 
-                    weibullScale(0.2), weibullScale(0.3), weibullScale(0.4),
-                    weibullScale(0.5), weibullScale(0.6), weibullScale(0.7),
-                    weibullScale(0.8), weibullScale(0.9), weibullScale(0.95),
-                    weibullScale(0.99)])
+        .tickValues([0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99].map(toWeibullScale))
         .tickFormat(d => {
-          // Convert back to probability for display
-          const p = inverseWeibullScale(d);
+          const p = fromWeibullScale(d);
           return `${(p * 100).toFixed(p >= 0.1 ? 0 : 1)}%`;
         });
 
-      // Add X axis
+      // 添加X轴
       svg.append("g")
         .attr("transform", `translate(0,${height})`)
         .call(xAxis);
 
-      // Add Y axis
+      // 添加Y轴
       svg.append("g")
         .call(yAxis);
 
-      // Add grid lines
+      // 添加网格线
       svg.append("g")
         .attr("class", "grid")
         .call(d3.axisLeft(yScale)
-          .tickValues([weibullScale(0.1), weibullScale(0.2), weibullScale(0.3),
-                      weibullScale(0.4), weibullScale(0.5), weibullScale(0.6),
-                      weibullScale(0.7), weibullScale(0.8), weibullScale(0.9)])
+          .tickValues([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].map(toWeibullScale))
           .tickSize(-width)
           .tickFormat(""));
 
@@ -270,86 +361,94 @@
           .tickSize(-height)
           .tickFormat(""));
 
-      // Add axis labels
+      // 添加轴标签
       svg.append("text")
         .attr("class", "axis-label")
         .attr("x", width / 2)
         .attr("y", height + margin.bottom / 2)
-        .text("时间");
+        .text("时间 (对数尺度)");
 
       svg.append("text")
         .attr("class", "axis-label")
         .attr("transform", "rotate(-90)")
         .attr("x", -height / 2)
         .attr("y", -margin.left / 2)
-        .text("累积失效概率");
+        .text("累积失效概率 (Weibull尺度)");
 
-      // Create line generators
-      const cdfLine = d3.line()
+      // 创建线生成器
+      const lineGenerator = d3.line()
         .x(d => xScale(d.x))
-        .y(d => yScale(weibullScale(d.y)))
+        .y(d => yScale(toWeibullScale(d.y)))
         .curve(d3.curveBasis);
 
-      const lowerLine = d3.line()
+      // 准备数据
+      const cdfData = plotData.cdf.x.map((x, i) => ({x, y: plotData.cdf.y[i]}));
+      const lowerData = plotData.bounds.lower.map((x, i) => ({x, y: plotData.rel[i]}));
+      const upperData = plotData.bounds.upper.map((x, i) => ({x, y: plotData.rel[i]}));
+
+      // 添加置信区间区域
+      const areaGenerator = d3.area()
         .x(d => xScale(d.x))
-        .y(d => yScale(weibullScale(d.y)))
+        .y0(d => yScale(toWeibullScale(d.lower)))
+        .y1(d => yScale(toWeibullScale(d.upper)))
         .curve(d3.curveBasis);
 
-      const upperLine = d3.line()
-        .x(d => xScale(d.x))
-        .y(d => yScale(weibullScale(d.y)))
-        .curve(d3.curveBasis);
+      const boundsData = plotData.rel.map((y, i) => ({
+        x: plotData.cdf.x[i],
+        lower: plotData.bounds.lower[i],
+        upper: plotData.bounds.upper[i]
+      }));
 
-      // Prepare data for lines
-      const cdfData = data.cdf.x.map((x, i) => ({x, y: data.cdf.y[i]}));
-      const lowerData = data.bounds.lower.map((x, i) => ({x, y: data.rel[i]}));
-      const upperData = data.bounds.upper.map((x, i) => ({x, y: data.rel[i]}));
+      svg.append("path")
+        .datum(boundsData)
+        .attr("class", "confidence-area")
+        .attr("d", areaGenerator)
+        .attr("fill", "rgba(255, 0, 0, 0.1)")
+        .attr("stroke", "none");
 
-      // Add CDF line
+      // 添加CDF线
       svg.append("path")
         .datum(cdfData)
         .attr("class", "line")
-        .attr("d", cdfLine)
+        .attr("d", lineGenerator)
         .attr("stroke", "steelblue")
         .attr("stroke-width", 2)
         .attr("fill", "none");
 
-      // Add lower bound line
+      // 添加置信边界线
       svg.append("path")
         .datum(lowerData)
         .attr("class", "line")
-        .attr("d", lowerLine)
+        .attr("d", lineGenerator)
         .attr("stroke", "red")
         .attr("stroke-width", 1.5)
         .attr("stroke-dasharray", "3,3")
         .attr("fill", "none");
 
-      // Add upper bound line
       svg.append("path")
         .datum(upperData)
         .attr("class", "line")
-        .attr("d", upperLine)
+        .attr("d", lineGenerator)
         .attr("stroke", "red")
         .attr("stroke-width", 1.5)
         .attr("stroke-dasharray", "3,3")
         .attr("fill", "none");
 
-    
-      // Add median ranks points
+      // 添加中位秩点
       svg.selectAll(".median-rank")
-        .data(data.df.map((x, i) => ({x, y: data.mr[i]})))
+        .data(plotData.df.map((x, i) => ({x, y: plotData.mr[i]})))
         .enter()
         .append("circle")
         .attr("class", "dot")
         .attr("cx", d => xScale(d.x))
-        .attr("cy", d => yScale(weibullScale(d.y)))
+        .attr("cy", d => yScale(toWeibullScale(d.y)))
         .attr("r", 5)
         .attr("fill", "orange");
 
-      // Add legend
+      // 添加图例
       const legend = svg.append("g")
         .attr("class", "legend")
-        .attr("transform", `translate(${width - 100}, 20)`);
+        .attr("transform", `translate(${width - 150}, 20)`);
 
       legend.append("rect")
         .attr("x", 0)
@@ -384,44 +483,102 @@
       legend.append("text")
         .attr("x", 20)
         .attr("y", 45)
-        .text("Confidence Bounds");
+        .text(`${cl * 100}% 置信区间`);
     }
 
-    function runAnalysis() {
-      const dfInput = document.getElementById('df').value;
-      const dsInput = document.getElementById('ds').value;
+    // 解析输入数据
+    function parseInput(input) {
+      return input.split(',')
+        .map(item => parseFloat(item.trim()))
+        .filter(item => !isNaN(item));
+    }
 
-      const df = dfInput.split(',').map(Number).filter(v => !isNaN(v));
-      const ds = dsInput.trim() === '' ? [] : dsInput.split(',').map(Number).filter(v => !isNaN(v));
-
-      if (df.length < 2) {
-        alert("请输入至少两个失效时间（df）！");
-        return;
+    // 运行分析
+    async function runAnalysis() {
+      try {
+        // 显示加载状态
+        const btn = document.getElementById('analyze-btn');
+        const loading = document.getElementById('loading');
+        const error = document.getElementById('error');
+        
+        btn.disabled = true;
+        loading.style.display = 'inline';
+        error.style.display = 'none';
+        
+        // 使用setTimeout让UI有机会更新
+        await new Promise(resolve => setTimeout(resolve, 10));
+        
+        // 获取并解析输入
+        const dfInput = document.getElementById('df').value;
+        const dsInput = document.getElementById('ds').value;
+        
+        const df = parseInput(dfInput);
+        const ds = dsInput.trim() ? parseInput(dsInput) : [];
+        df.sort((a,b) => a-b);
+        ds.sort((a,b) => a-b);
+        
+        // 验证输入
+        if (df.length < 2) {
+          throw new Error("至少需要两个失效时间数据点");
+        }
+        
+        if (df.some(t => t <= 0)) {
+          throw new Error("所有时间值必须大于0");
+        }
+        
+        // 执行分析
+        const analyzer = new WeibullAnalyzer(df, ds, cl);
+        const converged = analyzer.mle();
+        
+        if (!converged) {
+          console.warn("Weibull参数估计未完全收敛");
+        }
+        
+        // 生成图表数据
+        const allTimes = [...df, ...ds];
+        const minX = Math.max(0.1, Math.min(...allTimes) * 0.1);
+        const maxX = Math.max(...allTimes) * 10;
+        
+        const cdf = analyzer.generateCDFCurve(minX, maxX);
+        const mr = calculateMedianRanks(df, ds);
+        const rel = Array.from({length: 98}, (_, i) => (i + 1) / 100);
+        const bounds = calculateConfidenceBounds(analyzer, rel);
+        
+        // 显示结果
+        document.getElementById('params').innerHTML = `
+          <p><strong>形状参数 (β):</strong> ${analyzer.beta.toFixed(4)}</p>
+          <p><strong>特征寿命 (η):</strong> ${analyzer.eta.toFixed(4)}</p>
+          <p><strong>平均失效时间 (MTTF):</strong> ${(analyzer.eta * math.gamma(1 + 1/analyzer.beta)).toFixed(4)}</p>
+        `;
+        
+        document.getElementById('results').style.display = 'block';
+        
+        // 创建图表
+        const title = `Weibull分析`;
+        createWeibullPlot('plot', {
+          cdf,
+          df,
+          mr,
+          rel,
+          bounds,
+          cl: analyzer.cl
+        }, title);
+        
+      } catch (err) {
+        document.getElementById('error').textContent = `错误: ${err.message}`;
+        document.getElementById('error').style.display = 'block';
+        console.error(err);
+      } finally {
+        document.getElementById('analyze-btn').disabled = false;
+        document.getElementById('loading').style.display = 'none';
       }
-
-      const w = new Weibull(df, ds);
-      w.mle();
-
-      const dataX = df.concat(ds);
-      const minX = Math.min(...dataX) * 0.1;
-      const maxX = Math.max(...dataX) * 10;
-
-      const cdf = w.generateCDFCurve(minX, maxX);
-      const mr = medianRanks(df, ds);
-      const rel = Array.from({length: 98}, (_, i) => (i + 1) / 100);
-      const bounds = fisherBounds(w, rel);
-
-      const plotData = {
-        cdf,
-        df,
-        mr,
-        rel,
-        bounds
-      };
-
-      const title = `Weibull 分析图 - 形状(β): ${w.beta.toFixed(4)}，尺度(η): ${w.eta.toFixed(4)}`;
-      createWeibullPlot('plot', plotData, title);
     }
+
+    // 初始化示例数据
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('df').value = "16, 34, 53, 75, 93, 120";
+      document.getElementById('ds').value = "";
+    });
   </script>
 </body>
 </html>
