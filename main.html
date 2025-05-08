@@ -6,7 +6,39 @@
   <title>Weibull Analysis</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.3.0/math.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script>
-  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    #plot {
+      width: 800px;
+      height: 600px;
+    }
+    .axis-label {
+      font-size: 12px;
+      text-anchor: middle;
+    }
+    .grid line {
+      stroke: lightgrey;
+      stroke-opacity: 0.7;
+      shape-rendering: crispEdges;
+    }
+    .grid path {
+      stroke-width: 0;
+    }
+    .line {
+      fill: none;
+      stroke-width: 2px;
+    }
+    .dot {
+      stroke: #fff;
+      stroke-width: 1.5px;
+    }
+    .legend {
+      font-size: 12px;
+    }
+    .tick text {
+      font-size: 10px;
+    }
+  </style>
 </head>
 <body>
   <h1>Weibull 分析</h1>
@@ -25,7 +57,9 @@
     class Weibull {
       constructor(df, ds, cl = 0.95) {
         this.df = df;
+        this.df.sort((a, b) => a - b);
         this.ds = ds || []; // 若为空，设为空数组
+        this.ds.sort((a, b) => a - b);
         this.cl = cl;
         this.beta = 1;
         this.eta = 1;
@@ -75,38 +109,48 @@
     }
 
     function medianRanks(df, ds, cl = 0.5) {
-      const all = df.concat(ds);
-      const n = all.length;
-      const countDict = {};
-      df.forEach((v) => countDict[v] = (countDict[v] || 0) + 1);
-
-      const revRank = [];
-      const sortedAll = [...all].sort((a, b) => a - b);
-      const countLessThan = (v) => sortedAll.filter(x => x < v).length;
-      let seen = new Set();
-
-      for (let j of df) {
-        if (countDict[j] > 1) {
-          if (seen.has(j)) continue;
-          seen.add(j);
-          for (let i = 0; i < countDict[j]; i++) {
-            const count = countLessThan(j) + i;
-            revRank.push(n - count);
-          }
-        } else {
-          revRank.push(n - countLessThan(j));
+        const all = df.concat(ds);
+        const n = all.length;
+        
+        // Sort the failure times and assign ranks
+        const sortedFailures = [...df].sort((a, b) => a - b);
+        
+        // Calculate ranks, handling ties properly
+        const ranks = [];
+        let currentRank = 1;
+        
+        while (currentRank <= sortedFailures.length) {
+            const currentValue = sortedFailures[currentRank - 1];
+            
+            // Count how many failures have this same value
+            let tieCount = 1;
+            while (currentRank - 1 + tieCount < sortedFailures.length && 
+                sortedFailures[currentRank - 1 + tieCount] === currentValue) {
+            tieCount++;
+            }
+            
+            // Calculate average rank for these tied values
+            const averageRank = currentRank + (tieCount - 1) / 2;
+            
+            // Assign the average rank to all tied values
+            for (let i = 0; i < tieCount; i++) {
+            ranks.push(averageRank);
+            }
+            
+            currentRank += tieCount;
         }
-      }
-
-      const adjRanks = [];
-      let prev = 0;
-      for (let i = 0; i < df.length; i++) {
-        const adj = (revRank[i] * prev + n + 1) / (revRank[i] + 1);
-        adjRanks.push(adj);
-        prev = adj;
-      }
-
-      return adjRanks.map(r => jStat.beta.inv(cl, r, n - r + 1));
+  
+        // Calculate median ranks using Bernard's approximation
+        const bernardRanks = ranks.map(r => (r - 0.3) / (n + 0.4));
+        
+        // Or using exact median ranks (beta distribution)
+        const exactMedianRanks = ranks.map(r => jStat.beta.inv(cl, r, n - r + 1));
+        
+        // For Weibull analysis, Bernard's approximation is often sufficient
+        // return bernardRanks;
+        
+        // Or if you prefer the exact method:
+        return exactMedianRanks;
     }
 
     function fisherBounds(w, rel) {
@@ -139,6 +183,212 @@
       return { lower, upper };
     }
 
+    // Custom Weibull probability scale function
+    function weibullScale(p) {
+      return Math.log(-Math.log(1 - p));
+    }
+
+    // Inverse function for the Weibull probability scale
+    function inverseWeibullScale(y) {
+      return 1 - Math.exp(-Math.exp(y));
+    }
+
+    function createWeibullPlot(containerId, data, title) {
+      // Clear previous plot
+      d3.select(`#${containerId}`).html("");
+      
+      // Set up dimensions and margins
+      const margin = {top: 50, right: 100, bottom: 60, left: 60};
+      const width = 800 - margin.left - margin.right;
+      const height = 600 - margin.top - margin.bottom;
+
+      // Create SVG
+      const svg = d3.select(`#${containerId}`)
+        .append("svg")
+        .attr("width", width + margin.left + margin.right)
+        .attr("height", height + margin.top + margin.bottom)
+        .append("g")
+        .attr("transform", `translate(${margin.left},${margin.top})`);
+
+      // Add title
+      svg.append("text")
+        .attr("x", width / 2)
+        .attr("y", -20)
+        .attr("text-anchor", "middle")
+        .style("font-size", "16px")
+        .text(title);
+
+      // Create scales
+      const xScale = d3.scaleLog()
+        .domain([d3.min(data.cdf.x), d3.max(data.cdf.x)])
+        .range([0, width]);
+
+      // Custom y-scale using Weibull probability scale
+      const yScale = d3.scaleLinear()
+        .domain([weibullScale(0.01), weibullScale(0.99)]) // 1% to 99%
+        .range([height, 0]);
+
+      // Create axes
+      const xAxis = d3.axisBottom(xScale).ticks(10, ".1s");
+      
+      // Custom y-axis with Weibull probability scale ticks
+      const yAxis = d3.axisLeft(yScale)
+        .tickValues([weibullScale(0.01), weibullScale(0.05), weibullScale(0.1), 
+                    weibullScale(0.2), weibullScale(0.3), weibullScale(0.4),
+                    weibullScale(0.5), weibullScale(0.6), weibullScale(0.7),
+                    weibullScale(0.8), weibullScale(0.9), weibullScale(0.95),
+                    weibullScale(0.99)])
+        .tickFormat(d => {
+          // Convert back to probability for display
+          const p = inverseWeibullScale(d);
+          return `${(p * 100).toFixed(p >= 0.1 ? 0 : 1)}%`;
+        });
+
+      // Add X axis
+      svg.append("g")
+        .attr("transform", `translate(0,${height})`)
+        .call(xAxis);
+
+      // Add Y axis
+      svg.append("g")
+        .call(yAxis);
+
+      // Add grid lines
+      svg.append("g")
+        .attr("class", "grid")
+        .call(d3.axisLeft(yScale)
+          .tickValues([weibullScale(0.1), weibullScale(0.2), weibullScale(0.3),
+                      weibullScale(0.4), weibullScale(0.5), weibullScale(0.6),
+                      weibullScale(0.7), weibullScale(0.8), weibullScale(0.9)])
+          .tickSize(-width)
+          .tickFormat(""));
+
+      svg.append("g")
+        .attr("class", "grid")
+        .attr("transform", `translate(0,${height})`)
+        .call(d3.axisBottom(xScale)
+          .tickSize(-height)
+          .tickFormat(""));
+
+      // Add axis labels
+      svg.append("text")
+        .attr("class", "axis-label")
+        .attr("x", width / 2)
+        .attr("y", height + margin.bottom / 2)
+        .text("时间");
+
+      svg.append("text")
+        .attr("class", "axis-label")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -height / 2)
+        .attr("y", -margin.left / 2)
+        .text("累积失效概率");
+
+      // Create line generators
+      const cdfLine = d3.line()
+        .x(d => xScale(d.x))
+        .y(d => yScale(weibullScale(d.y)))
+        .curve(d3.curveBasis);
+
+      const lowerLine = d3.line()
+        .x(d => xScale(d.x))
+        .y(d => yScale(weibullScale(d.y)))
+        .curve(d3.curveBasis);
+
+      const upperLine = d3.line()
+        .x(d => xScale(d.x))
+        .y(d => yScale(weibullScale(d.y)))
+        .curve(d3.curveBasis);
+
+      // Prepare data for lines
+      const cdfData = data.cdf.x.map((x, i) => ({x, y: data.cdf.y[i]}));
+      const lowerData = data.bounds.lower.map((x, i) => ({x, y: data.rel[i]}));
+      const upperData = data.bounds.upper.map((x, i) => ({x, y: data.rel[i]}));
+
+      // Add CDF line
+      svg.append("path")
+        .datum(cdfData)
+        .attr("class", "line")
+        .attr("d", cdfLine)
+        .attr("stroke", "steelblue")
+        .attr("stroke-width", 2)
+        .attr("fill", "none");
+
+      // Add lower bound line
+      svg.append("path")
+        .datum(lowerData)
+        .attr("class", "line")
+        .attr("d", lowerLine)
+        .attr("stroke", "red")
+        .attr("stroke-width", 1.5)
+        .attr("stroke-dasharray", "3,3")
+        .attr("fill", "none");
+
+      // Add upper bound line
+      svg.append("path")
+        .datum(upperData)
+        .attr("class", "line")
+        .attr("d", upperLine)
+        .attr("stroke", "red")
+        .attr("stroke-width", 1.5)
+        .attr("stroke-dasharray", "3,3")
+        .attr("fill", "none");
+
+    
+      // Add median ranks points
+      svg.selectAll(".median-rank")
+        .data(data.df.map((x, i) => ({x, y: data.mr[i]})))
+        .enter()
+        .append("circle")
+        .attr("class", "dot")
+        .attr("cx", d => xScale(d.x))
+        .attr("cy", d => yScale(weibullScale(d.y)))
+        .attr("r", 5)
+        .attr("fill", "orange");
+    console.log(data.df)
+    console.log(data.mr)
+
+      // Add legend
+      const legend = svg.append("g")
+        .attr("class", "legend")
+        .attr("transform", `translate(${width - 100}, 20)`);
+
+      legend.append("rect")
+        .attr("x", 0)
+        .attr("y", 0)
+        .attr("width", 12)
+        .attr("height", 12)
+        .attr("fill", "steelblue");
+
+      legend.append("text")
+        .attr("x", 20)
+        .attr("y", 10)
+        .text("Weibull CDF");
+
+      legend.append("rect")
+        .attr("x", 0)
+        .attr("y", 20)
+        .attr("width", 12)
+        .attr("height", 12)
+        .attr("fill", "orange");
+
+      legend.append("text")
+        .attr("x", 20)
+        .attr("y", 30)
+        .text("Median Ranks");
+
+      legend.append("path")
+        .attr("d", "M0,40 L12,40")
+        .attr("stroke", "red")
+        .attr("stroke-width", 1.5)
+        .attr("stroke-dasharray", "3,3");
+
+      legend.append("text")
+        .attr("x", 20)
+        .attr("y", 45)
+        .text("Confidence Bounds");
+    }
+
     function runAnalysis() {
       const dfInput = document.getElementById('df').value;
       const dsInput = document.getElementById('ds').value;
@@ -158,21 +408,21 @@
       const minX = Math.min(...dataX) * 0.1;
       const maxX = Math.max(...dataX) * 10;
 
-      const { x, y } = w.generateCDFCurve(minX, maxX);
+      const cdf = w.generateCDFCurve(minX, maxX);
       const mr = medianRanks(df, ds);
       const rel = Array.from({length: 98}, (_, i) => (i + 1) / 100);
       const bounds = fisherBounds(w, rel);
 
-      Plotly.newPlot('plot', [
-        { x, y, mode: 'lines', name: 'Weibull CDF' },
-        { x: df, y: mr, mode: 'markers', name: 'Median Ranks' },
-        { x: bounds.lower, y: rel, mode: 'lines', name: 'Lower Bound', line: { dash: 'dot' }},
-        { x: bounds.upper, y: rel, mode: 'lines', name: 'Upper Bound', line: { dash: 'dot' }}
-      ], {
-        xaxis: { title: '时间', type: 'log' },
-        yaxis: { title: '百分比', type: 'log' },
-        title: `Weibull 分析图 - 形状(β): ${w.beta.toFixed(4)}，尺度(η): ${w.eta.toFixed(4)}`
-      });
+      const plotData = {
+        cdf,
+        df,
+        mr,
+        rel,
+        bounds
+      };
+
+      const title = `Weibull 分析图 - 形状(β): ${w.beta.toFixed(4)}，尺度(η): ${w.eta.toFixed(4)}`;
+      createWeibullPlot('plot', plotData, title);
     }
   </script>
 </body>
