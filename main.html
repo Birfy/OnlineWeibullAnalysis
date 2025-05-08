@@ -301,7 +301,7 @@
       d3.select(`#${containerId}`).html("");
       
       // 设置尺寸和边距
-      const margin = {top: 50, right: 100, bottom: 60, left: 60};
+      const margin = {top: 50, right: 100, bottom: 60, left: 100};
       const width = 800 - margin.left - margin.right;
       const height = 600 - margin.top - margin.bottom;
 
@@ -329,7 +329,7 @@
 
       // 自定义y轴比例尺（Weibull概率尺度）
       const yScale = d3.scaleLinear()
-        .domain([toWeibullScale(0.01), toWeibullScale(0.99)]) // 1%到99%
+        .domain([toWeibullScale(plotData.rel[0]), toWeibullScale(plotData.rel[plotData.rel.length-1])]) // 1%到99%
         .range([height, 0]);
 
       // 创建轴
@@ -337,7 +337,7 @@
       
       // 自定义y轴刻度
       const yAxis = d3.axisLeft(yScale)
-        .tickValues([0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99].map(toWeibullScale))
+        .tickValues([0.001,0.01,0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].map(toWeibullScale))
         .tickFormat(d => {
           const p = fromWeibullScale(d);
           return `${(p * 100).toFixed(p >= 0.1 ? 0 : 1)}%`;
@@ -356,7 +356,7 @@
       svg.append("g")
         .attr("class", "grid")
         .call(d3.axisLeft(yScale)
-          .tickValues([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].map(toWeibullScale))
+          .tickValues([0.001,0.01,0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].map(toWeibullScale))
           .tickSize(-width)
           .tickFormat(""));
 
@@ -466,7 +466,7 @@
       legend.append("text")
         .attr("x", 20)
         .attr("y", 10)
-        .text("Weibull CDF");
+        .text("Weibull累积失效率");
 
       legend.append("rect")
         .attr("x", 0)
@@ -478,7 +478,7 @@
       legend.append("text")
         .attr("x", 20)
         .attr("y", 30)
-        .text("Median Ranks");
+        .text("数据点");
 
       legend.append("path")
         .attr("d", "M0,40 L12,40")
@@ -542,12 +542,15 @@
         
         // 生成图表数据
         const allTimes = [...df, ...ds];
-        const minX = Math.max(0.1, Math.min(...allTimes) * 0.1);
-        const maxX = Math.max(...allTimes) * 10;
+        const minX = Math.max(0.1, Math.min(...allTimes) * 0.33);
+        const maxX = Math.max(...allTimes) * 3;
         
         const cdf = analyzer.generateCDFCurve(minX, maxX);
         const mr = calculateMedianRanks(df, ds);
-        const rel = Array.from({length: 98}, (_, i) => (i + 1) / 100);
+
+        const minY = analyzer.cdf(minX)
+        const maxY = analyzer.cdf(maxX)
+        const rel = Array.from({ length: Math.ceil((maxY - minY) / 0.01) }, (_, i) => minY + i * 0.01);;
         const bounds = calculateConfidenceBounds(analyzer, rel);
         
         // 显示结果
