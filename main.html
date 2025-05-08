@@ -43,10 +43,10 @@
 <body>
   <h1>Weibull 分析</h1>
 
-  <label for="df">输入失效时间 df（逗号分隔）:</label><br>
+  <label for="df">输入失效时间（逗号分隔）:</label><br>
   <textarea id="df" rows="2" cols="50" placeholder="例如：16,34,53,75,93,120"></textarea><br><br>
 
-  <label for="ds">输入暂停时间 ds（可留空）:</label><br>
+  <label for="ds">输入未失效测试时间（右删失，可留空）:</label><br>
   <textarea id="ds" rows="2" cols="50" placeholder="例如：50,100,200,1000（可选）"></textarea><br><br>
 
   <button onclick="runAnalysis()">开始分析</button>
@@ -75,12 +75,12 @@
 
       mle() {
         const tol = 1e-5;
-        let beta = 1.0, diff, iter = 0;
+        let beta = 0.1, diff, iter = 0;
         const maxIter = 1000;
 
         do {
           const f = this.h(beta);
-          const df = (this.h(beta + 1e-6) - f) / 1e-6;
+          const df = (this.h(beta + 1e-7) - this.h(beta - 1e-7)) / 2e-7;
           const newBeta = beta - f / df;
           diff = Math.abs(newBeta - beta);
           beta = newBeta;
@@ -345,8 +345,6 @@
         .attr("cy", d => yScale(weibullScale(d.y)))
         .attr("r", 5)
         .attr("fill", "orange");
-    console.log(data.df)
-    console.log(data.mr)
 
       // Add legend
       const legend = svg.append("g")
